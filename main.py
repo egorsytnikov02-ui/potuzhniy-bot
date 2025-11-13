@@ -54,6 +54,7 @@ SCORES_KEY = "potuzhniy_scores"
 def load_scores(chat_id):
     """Загружает очки для ОДНОГО чата из БД Redis."""
     try:
+        # hget (hash-get) - получить значение из "словаря"
         score = redis.hget(SCORES_KEY, chat_id)
         if score is None:
             return 0
@@ -65,6 +66,7 @@ def load_scores(chat_id):
 def save_scores(chat_id, new_score):
     """Сохраняет очки для ОДНОГО чата в БД Redis."""
     try:
+        # hset (hash-set) - установить значение в "словаре"
         redis.hset(SCORES_KEY, chat_id, new_score)
     except Exception as e:
         logger.error(f"Ошибка записи в Redis для chat_id {chat_id}: {e}")
@@ -73,11 +75,14 @@ def save_scores(chat_id, new_score):
 async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск щоденного завдання: вечірнє повідомлення...")
     try:
+        # hgetall - получить ВЕСЬ "словарь" (все чаты и их очки)
         all_chats = redis.hgetall(SCORES_KEY)
+        
         if not all_chats:
             logger.info("Не знайдено чатів у БД (Redis), повідомлення пропущено.")
             return
 
+        # all_chats.keys() вернет нам список всех chat_id
         for chat_id in all_chats.keys():
             try:
                 await context.bot.send_message(
@@ -91,22 +96,22 @@ async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка получения списка чатов из Redis для рассылки: {e}")
 
 
-# --- ⭐️⭐️⭐️ ПОЛНОСТЬЮ НОВЫЙ ОБРАБОТЧИК СООБЩЕНИЙ ⭐️⭐️⭐️ ---
+# --- ⭐️⭐️⭐️ ОБНОВЛЕННЫЙ ОБРАБОТЧИК СООБЩЕНИЙ (С ПРАВИЛЬНЫМИ ССЫЛКАМИ) ⭐️⭐️⭐️ ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
         
     message_text = update.message.text.strip()
     chat_id = str(update.message.chat_id) 
 
-    # --- Ссылки на GIF (взяты из твоих сообщений) ---
-    GIF_PLUS = "https://tenor.com/fc9tON9DdOq.gif"
-    GIF_MINUS = "https://tenor.com/eRs2gXpleGo.gif"
-    GIF_300 = "https://tenor.com/ZDv9rJSjG3.gif"
-    GIF_OVER_1000 = "https://tenor.com/oIcXSh7dq8S.gif"
-    # Это PNG, будем отправлять как ФОТО
+    # --- ⭐️ ПРЯМЫЕ ССЫЛКИ НА МЕДИА (ИСПРАВЛЕНО) ---
+    GIF_PLUS = "https://media.tenor.com/1-qF1-5K2wYAAAAj/potuzhno-power.gif"
+    GIF_MINUS = "https://media.tenor.com/G5g2_d5d0w8AAAAj/potuzhno-unpowerful.gif"
+    GIF_300 = "https://media.tenor.com/y1vOsdP-n7sAAAAj/potuzhno.gif"
+    GIF_OVER_1000 = "https://media.tenor.com/Q2-F-QJp-YcAAAAj/shef-go-to-hell.gif"
+    # Эта ссылка .png была правильной изначально
     PNG_OVER_10 = "https://media.tenor.com/y33L_hgPoYsAAAAe/%D0%BF%D0%BE%D1%82%D1%83%D0%B6%D0%BD%D0%BE-%D0%BD%D0%B5-%D0%BF%D0%BE%D1%82%D1%83%D0%B6%D0%BD%D0%BE.png"
 
-    # re.search() ищет В ЛЮБОМ МЕСТЕ СООБЩЕНИЯ (вместо re.match())
+    # re.search() ищет В ЛЮБОМ МЕСТЕ СООБЩЕНИЯ
     match = re.search(r'([+-])\s*(\d+)', message_text)
 
     if not match:
@@ -131,7 +136,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return # Очки не считаем
             
         if value > 10:
-            # Отправляем PNG как ФОТО
             await update.message.reply_photo(PNG_OVER_10) 
             return # Очки не считаем
         
