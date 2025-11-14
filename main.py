@@ -1,4 +1,4 @@
-import logging
+Import logging
 import os
 import re
 import datetime
@@ -87,7 +87,7 @@ async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="Добрий вечір ,як у всіх з ПОТУЖНИСТЮ ?"
+                    text="Добрий вечір ,як у всіх з ПОТУЖНІСТЮ ?"
                 )
                 logger.info(f"Надіслано вечірнє повідомлення до чату: {chat_id}")
             except Exception as e:
@@ -101,13 +101,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     message_text = update.message.text.strip()
     chat_id = str(update.message.chat_id) 
-    
-    # ⬇️ --- ВОТ ИЗМЕНЕНИЕ --- ⬇️
-    # 1. Используем re.search() вместо re.match()
-    #    (re.search ищет В ЛЮБОМ МЕСТЕ строки, а re.match - только В НАЧАЛЕ)
-    # 2. Убираем '^' из регулярного выражения, так как он тоже означал "начало строки".
-    match = re.search(r'([+-])\s*(\d+)', message_text)
-    # ⬆️ --- КОНЕЦ ИЗМЕНЕНИЯ --- ⬆️
+    match = re.match(r'^([+-])\s*(\d+)', message_text)
 
     if match:
         operator = match.group(1)
