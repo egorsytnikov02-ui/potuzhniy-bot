@@ -1,155 +1,155 @@
 import logging
 import os
+import re
 import datetime
-from zoneinfo import ZoneInfo  # Для указания часового пояса
+import pytz
+
+from threading import Thread
+from flask import Flask
+
+# ⭐️ НОВЫЕ БИБЛИОТЕКИ ДЛЯ БАЗЫ ДАННЫХ
+from upstash_redis import Redis
 
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
+from telegram.ext import Application, MessageHandler, ContextTypes, filters, JobQueue
+from telegram.constants import ParseMode
 
-# --- Настройка логирования (чтобы убрать "спам") ---
+# --- Настройки бота (ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ) ---
+TOKEN = os.environ.get('TOKEN')
+# ⭐️ НОВЫЕ КЛЮЧИ ИЗ UPSTASH (Акт I)
+UPSTASH_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
+UPSTASH_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
+
+# ⭐️ НОВОЕ: Подключение к Базе Данных (Redis)
+try:
+    redis = Redis(url=UPSTASH_URL, token=UPSTASH_TOKEN)
+    logger = logging.getLogger(__name__) # Определяем logger здесь
+    logger.info("Успешное подключение к Upstash (Redis)!")
+except Exception as e:
+    # Если логгер еще не создан, просто выводим в print
+    print(f"Критическая ошибка: Не удалось подключиться к Upstash (Redis)! {e}")
+    exit()
+
+# --- Веб-сервер (Для UptimeRobot) ---
+app = Flask('')
+@app.route('/')
+def home():
+    return "Бот 'ПОТУЖНИЙ' активний!"
+
+def run_web_server():
+    # Render.com сам найдет этот порт
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+# ------------------------------------
+
+# --- Логика самого бота ---
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
+# --- ⭐️ ОБНОВЛЕНО: Функции для работы с БД (Redis) ---
+# Мы будем использовать "Hash" (Словарь) в Redis под названием 'potuzhniy_scores'
+SCORES_KEY = "potuzhniy_scores"
 
-# --- Константы ---
-KYIV_TIMEZONE = ZoneInfo("Europe/Kyiv")
-DAILY_GREETING_TIME = datetime.time(hour=20, minute=0, tzinfo=KYIV_TIMEZONE)
-
-# --- Функции-обработчики ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработчик команды /start.
-    Приветствует пользователя и запускает ежедневное задание.
-    """
-    user_name = update.effective_user.first_name
-    chat_id = update.effective_chat.id
-    
-    # Инициализируем счет, если его еще нет
-    context.chat_data.setdefault('power_score', 0)
-
-    # --- Настройка ежедневного задания ---
-    job_name = f'daily_greeting_{chat_id}'
-
-    # 1. Сначала удаляем старое задание (если оно было), чтобы избежать дубликатов
-    current_jobs = context.job_queue.get_jobs_by_name(job_name)
-    if current_jobs:
-        for job in current_jobs:
-            job.schedule_removal()
-        logger.info(f"Удалено старое ежедневное задание для чата {chat_id}")
-
-    # 2. Создаем новое задание
-    context.job_queue.run_daily(
-        send_daily_greeting,
-        time=DAILY_GREETING_TIME,
-        chat_id=chat_id,
-        name=job_name
-    )
-    
-    logger.info(f"Установлено ежедневное задание для чата {chat_id} на {DAILY_GREETING_TIME}")
-    
-    await update.message.reply_text(
-        f"Привіт, {user_name}! Я бот 'ПОТУЖНИЙ'.\n"
-        f"Я буду рахувати 'потужність' в цьому чаті.\n"
-        f"Просто пишіть '+' або '-' у повідомленнях.\n\n"
-        f"Щоб перевірити рахунок, введіть /score.\n"
-        f"Я також буду вітати вас щодня о 20:00."
-    )
-
-async def check_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработчик команды /score.
-    Показывает текущий счет потужності.
-    """
-    # .get() безопаснее - вернет 0, если счета еще нет
-    score = context.chat_data.get('power_score', 0)
-    await update.message.reply_text(f"🔥 Поточна Потужність: {score}")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработчик всех текстовых сообщений.
-    Считает + и - в тексте.
-    """
-    # Убедимся, что у нас есть сообщение (а не, например, изменение в чате)
-    if not update.message or not update.message.text:
-        return
-
-    text = update.message.text
-    
-    # Считаем *каждое* вхождение символов
-    plus_count = text.count('+')
-    minus_count = text.count('-')
-
-    # Если в сообщении нет ни плюсов, ни минусов - ничего не делаем
-    if plus_count == 0 and minus_count == 0:
-        return
-
-    # Получаем текущий счет (или 0, если его нет)
-    current_score = context.chat_data.get('power_score', 0)
-    
-    # Считаем новый счет
-    new_score = current_score + plus_count - minus_count
-    
-    # Сохраняем новый счет
-    context.chat_data['power_score'] = new_score
-    
-    logger.info(f"Чат {update.effective_chat.id}: {plus_count} плюсов, {minus_count} минусов. "
-                f"Счет изменен с {current_score} на {new_score}.")
-
-    # Отвечаем в чат (можно закомментировать, если не хотите спамить)
-    await update.message.reply_text(f"Зараховано! Потужність: {new_score}")
-
-async def send_daily_greeting(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Функция, которую вызывает JobQueue.
-    Отправляет ежедневное приветствие.
-    """
-    job = context.job
-    chat_id = job.chat_id
-    
-    logger.info(f"Отправка ежедневного приветствия в чат {chat_id}")
+def load_scores(chat_id):
+    """Загружает очки для ОДНОГО чата из БД Redis."""
     try:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Добрий вечір! 👋\nШо у вас по Потужності?"
-        )
-        
-        # Опционально: можно также отправить текущий счет
-        # score = context.chat_data.get('power_score', 0)
-        # await context.bot.send_message(chat_id=chat_id, text=f"Поточний рахунок: {score}")
-
+        # hget (hash-get) - получить значение из "словаря"
+        score = redis.hget(SCORES_KEY, chat_id)
+        if score is None:
+            return 0
+        return int(score)
     except Exception as e:
-        logger.error(f"Не удалось отправить сообщение в чат {chat_id}: {e}")
+        logger.error(f"Ошибка чтения из Redis для chat_id {chat_id}: {e}")
+        return 0
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Логирует ошибки."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+def save_scores(chat_id, new_score):
+    """Сохраняет очки для ОДНОГО чата в БД Redis."""
+    try:
+        # hset (hash-set) - установить значение в "словаре"
+        redis.hset(SCORES_KEY, chat_id, new_score)
+    except Exception as e:
+        logger.error(f"Ошибка записи в Redis для chat_id {chat_id}: {e}")
 
-# --- Основная функция ---
+# --- ⭐️ Ежедневное сообщение ---
+async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Запуск щоденного завдання: вечірнє повідомлення...")
+    try:
+        # hgetall - получить ВЕСЬ "словарь" (все чаты и их очки)
+        all_chats = redis.hgetall(SCORES_KEY)
+        
+        if not all_chats:
+            logger.info("Не знайдено чатів у БД (Redis), повідомлення пропущено.")
+            return
 
-def main():
-    """Главная функция для запуска бота"""
+        # all_chats.keys() вернет нам список всех chat_id
+        for chat_id in all_chats.keys():
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Добрий вечір ,як у всіх з ПОТУЖНІСТЮ ?"
+                )
+                logger.info(f"Надіслано вечірнє повідомлення до чату: {chat_id}")
+            except Exception as e:
+                logger.warning(f"Не вдалося надіслати повідомлення до {chat_id}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка получения списка чатов из Redis для рассылки: {e}")
+
+
+# --- ⭐️ ОБНОВЛЕНО: Обработчик сообщений (+100 очков) ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    message_text = update.message.text.strip()
+    chat_id = str(update.message.chat_id) 
+    match = re.match(r'^([+-])\s*(\d+)', message_text)
+
+    if match:
+        operator = match.group(1)
+        try: value = int(match.group(2))
+        except ValueError: return
+
+        current_score = load_scores(chat_id) # 👈 Загрузка из БД
+
+        if operator == '+': new_score = current_score + value
+        else: new_score = current_score - value
+
+        save_scores(chat_id, new_score) # 👈 Сохранение в БД
+
+        await update.message.reply_text(
+            f"🏆 <b>Рахунок потужності:</b> <code>{new_score}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+# --- Функция запуска бота ---
+def main_bot():
+    job_queue = JobQueue()
+    application = Application.builder().token(TOKEN).job_queue(job_queue).build()
+
+    UKRAINE_TZ = pytz.timezone('Europe/Kyiv')
+    job_time = datetime.time(hour=20, minute=0, tzinfo=UKRAINE_TZ)
     
-    # 1. Получаем токен из переменных окружения (как требует Render)
-    TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    if not TOKEN:
-        logger.critical("Ошибка: Необходима переменная окружения TELEGRAM_TOKEN!")
-        return
+    job_queue.run_daily(
+        send_evening_message,
+        time=job_time,
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
+    logger.info("Заплановано щоденне повідомлення на 20:00 (Europe/Kyiv).")
 
-    # 2. Создаем объект Application
-    application = Application.builder().token(TOKEN).build()
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
 
-    # 3. Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("score
+    print("Бот 'ПОТУЖНИЙ' запущен...")
+    application.run_polling()
+
+# --- Главный запуск (Бота и Веб-сервера) ---
+if __name__ == '__main__':
+    if not TOKEN or not UPSTASH_URL or not UPSTASH_TOKEN:
+        logger.critical("КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют TOKEN, UPSTASH_URL или UPSTASH_TOKEN!")
+    else:
+        print("Запуск веб-сервера для UptimeRobot...")
+        server_thread = Thread(target=run_web_server)
+        server_thread.daemon = True 
+        server_thread.start()
+
+        main_bot()
