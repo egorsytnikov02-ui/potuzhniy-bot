@@ -54,7 +54,6 @@ SCORES_KEY = "potuzhniy_scores"
 def load_scores(chat_id):
     """Загружает очки для ОДНОГО чата из БД Redis."""
     try:
-        # hget (hash-get) - получить значение из "словаря"
         score = redis.hget(SCORES_KEY, chat_id)
         if score is None:
             return 0
@@ -66,7 +65,6 @@ def load_scores(chat_id):
 def save_scores(chat_id, new_score):
     """Сохраняет очки для ОДНОГО чата в БД Redis."""
     try:
-        # hset (hash-set) - установить значение в "словаре"
         redis.hset(SCORES_KEY, chat_id, new_score)
     except Exception as e:
         logger.error(f"Ошибка записи в Redis для chat_id {chat_id}: {e}")
@@ -75,14 +73,11 @@ def save_scores(chat_id, new_score):
 async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск щоденного завдання: вечірнє повідомлення...")
     try:
-        # hgetall - получить ВЕСЬ "словарь" (все чаты и их очки)
         all_chats = redis.hgetall(SCORES_KEY)
-        
         if not all_chats:
             logger.info("Не знайдено чатів у БД (Redis), повідомлення пропущено.")
             return
 
-        # all_chats.keys() вернет нам список всех chat_id
         for chat_id in all_chats.keys():
             try:
                 await context.bot.send_message(
@@ -96,29 +91,75 @@ async def send_evening_message(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка получения списка чатов из Redis для рассылки: {e}")
 
 
-# --- ⭐️ ОБНОВЛЕНО: Обработчик сообщений (+100 очков) ---
+# --- ⭐️⭐️⭐️ ПОЛНОСТЬЮ НОВЫЙ ОБРАБОТЧИК СООБЩЕНИЙ ⭐️⭐️⭐️ ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
+        
     message_text = update.message.text.strip()
     chat_id = str(update.message.chat_id) 
-    match = re.match(r'^([+-])\s*(\d+)', message_text)
 
-    if match:
-        operator = match.group(1)
-        try: value = int(match.group(2))
-        except ValueError: return
+    # re.search() ищет В ЛЮБОМ МЕСТЕ СООБЩЕНИЯ (вместо re.match())
+    match = re.search(r'([+-])\s*(\d+)', message_text)
 
-        current_score = load_scores(chat_id) # 👈 Загрузка из БД
+    if not match:
+        return # Ничего не найдено, выходим
 
-        if operator == '+': new_score = current_score + value
-        else: new_score = current_score - value
+    try:
+        operator = match.group(1) # '+' или '-'
+        value = int(match.group(2)) # Число
+    except (ValueError, IndexError):
+        return # Ошибка в regex (не должно случиться)
 
-        save_scores(chat_id, new_score) # 👈 Сохранение в БД
-
-        await update.message.reply_text(
-            f"🏆 <b>Рахунок потужності:</b> <code>{new_score}</code>",
+    # --- ⭐️ НОВАЯ ЛОГИКА ПРОВЕРОК ---
+    
+    # 1. Проверяем ПЛЮСЫ
+    if operator == '+':
+        if value == 300:
+            await update.message.reply_animation(GIF_300)
+            return # Очки не считаем
+            
+        if value > 1000:
+            await update.message.reply_animation(GIF_OVER_1000)
+            return # Очки не считаем
+            
+        if value > 10:
+            # Отправляем PNG как ФОТО
+            await update.message.reply_photo(PNG_OVER_10) 
+            return # Очки не считаем
+        
+        # Если value <= 10 (все проверки пройдены)
+        current_score = load_scores(chat_id)
+        new_score = current_score + value
+        save_scores(chat_id, new_score)
+        
+        await update.message.reply_animation(
+            animation=GIF_PLUS,
+            caption=f"🏆 <b>Рахунок потужності:</b> <code>{new_score}</code>",
             parse_mode=ParseMode.HTML
         )
+        return
+
+    # 2. Проверяем МИНУСЫ
+    if operator == '-':
+        if value > 1000:
+            await update.message.reply_animation(GIF_OVER_1000)
+            return # Очки не считаем
+            
+        if value > 10:
+            await update.message.reply_photo(PNG_OVER_10)
+            return # Очки не считаем
+        
+        # Если value <= 10 (все проверки пройдены)
+        current_score = load_scores(chat_id)
+        new_score = current_score - value
+        save_scores(chat_id, new_score)
+        
+        await update.message.reply_animation(
+            animation=GIF_MINUS,
+            caption=f"🏆 <b>Рахунок потужності:</b> <code>{new_score}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
 # --- Функция запуска бота ---
 def main_bot():
